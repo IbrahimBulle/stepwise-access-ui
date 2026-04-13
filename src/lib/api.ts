@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+const API_BASE = import.meta.env.VITE_API_BASE || "https://mental-health-hub-ue25.onrender.com";
 
 interface AuthUser {
   id: number;
