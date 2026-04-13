@@ -1,0 +1,109 @@
+import { useState } from "react";
+import { useAuth } from "@/contexts/AuthContext";
+import { useNavigate, Link } from "react-router-dom";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+
+export default function Register() {
+  const { register } = useAuth();
+  const navigate = useNavigate();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("mental_health_user");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await register(name, email, password, "en", role);
+      navigate("/dashboard");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background px-4">
+      <div className="w-full max-w-md animate-fade-in">
+        <div className="text-center mb-10">
+          <h1 className="text-4xl tracking-tight text-foreground">Join AfyaMind</h1>
+          <p className="text-muted-foreground mt-2">Begin your wellness journey today.</p>
+        </div>
+
+        <div className="card-elevated p-10">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+            <div className="space-y-2">
+              <Label htmlFor="name">Full Name</Label>
+              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" required className="rounded-2xl h-12" />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" required className="rounded-2xl h-12" />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="At least 8 characters" required className="rounded-2xl h-12" />
+            </div>
+
+            {/* Role Selection */}
+            <div className="space-y-3">
+              <Label>I am a...</Label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setRole("mental_health_user")}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all ${
+                    role === "mental_health_user"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/30"
+                  }`}
+                >
+                  <div className="text-2xl mb-2">🧘</div>
+                  <div className="font-medium text-sm">Person seeking care</div>
+                  <div className="text-xs text-muted-foreground mt-1">Track mood, journal, and get support</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRole("community_health_worker")}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all ${
+                    role === "community_health_worker"
+                      ? "border-primary bg-primary/5"
+                      : "border-border hover:border-primary/30"
+                  }`}
+                >
+                  <div className="text-2xl mb-2">💚</div>
+                  <div className="font-medium text-sm">Community Health Worker</div>
+                  <div className="text-xs text-muted-foreground mt-1">Monitor and support patients</div>
+                </button>
+              </div>
+            </div>
+
+            {error && (
+              <p className="text-sm text-destructive bg-destructive/10 px-4 py-2 rounded-xl">{error}</p>
+            )}
+
+            <Button type="submit" disabled={loading} className="rounded-2xl h-12 text-base">
+              {loading ? "Creating account..." : "Create Account"}
+            </Button>
+          </form>
+        </div>
+
+        <p className="text-center text-sm text-muted-foreground mt-6">
+          Already have an account?{" "}
+          <Link to="/login" className="text-primary font-medium hover:underline">
+            Sign in
+          </Link>
+        </p>
+      </div>
+    </div>
+  );
+}
