@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { Phone, Calendar, User, Clock } from "lucide-react";
+import VoiceCall from "@/components/VoiceCall";
 
 export default function Appointments() {
   const { toast } = useToast();
@@ -12,6 +14,7 @@ export default function Appointments() {
   const [sessionMode, setSessionMode] = useState("in_person");
   const [appointmentTime, setAppointmentTime] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeCall, setActiveCall] = useState<{ id: number; therapist: string } | null>(null);
 
   useEffect(() => {
     api.getAppointments().then(setAppointments).catch(console.error);
@@ -32,6 +35,10 @@ export default function Appointments() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCall = (appointment: any) => {
+    setActiveCall({ id: appointment.id, therapist: appointment.therapist });
   };
 
   return (
@@ -79,20 +86,47 @@ export default function Appointments() {
       <div className="flex flex-col gap-3">
         {appointments.map((a: any) => (
           <div key={a.id} className="card-elevated p-6 flex items-center justify-between">
-            <div>
-              <div className="font-medium">{a.therapist}</div>
-              <div className="text-sm text-muted-foreground">
-                {a.appointment_time} · <span className="capitalize">{a.session_mode?.replace("_", " ")}</span>
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                <User className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <div className="font-medium">{a.therapist}</div>
+                <div className="text-sm text-muted-foreground flex items-center gap-2">
+                  <Calendar className="h-3.5 w-3.5" />
+                  {a.appointment_time}
+                  <span className="capitalize">· {a.session_mode?.replace("_", " ")}</span>
+                </div>
               </div>
             </div>
-            <span className={`text-xs px-3 py-1 rounded-full font-medium ${
-              a.status === "booked" ? "bg-sage/20 text-sage-foreground" : "bg-secondary text-secondary-foreground"
-            }`}>
-              {a.status}
-            </span>
+            <div className="flex items-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-full gap-2 border-primary/30 text-primary hover:bg-primary/5"
+                onClick={() => handleCall(a)}
+              >
+                <Phone className="h-3.5 w-3.5" />
+                Call
+              </Button>
+              <span className={`text-xs px-3 py-1 rounded-full font-medium ${
+                a.status === "booked" ? "bg-primary/10 text-primary" : "bg-secondary text-secondary-foreground"
+              }`}>
+                {a.status}
+              </span>
+            </div>
           </div>
         ))}
       </div>
+
+      {/* Voice Call Modal */}
+      {activeCall && (
+        <VoiceCall
+          appointmentId={activeCall.id}
+          therapistName={activeCall.therapist}
+          onClose={() => setActiveCall(null)}
+        />
+      )}
     </div>
   );
 }
