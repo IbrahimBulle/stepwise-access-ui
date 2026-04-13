@@ -1,18 +1,19 @@
 import { useState, useRef, useEffect } from "react";
-import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
+import { useToast } from "@/hooks/use-toast";
+import { Bot, Send, User, Sparkles, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useToast } from "@/hooks/use-toast";
-import { Bot, Send, User, Sparkles, AlertTriangle, Loader2 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { supabase } from "@/integrations/supabase/client";
 
 interface ChatMessage {
   id: number;
   role: "user" | "assistant";
   content: string;
-  risk_level?: string;
-  suggested_actions?: string[];
 }
+
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/wellness-chat`;
 
 const motivationalGreetings = [
   "You're doing something brave by showing up today. 💛",
@@ -48,16 +49,94 @@ export default function AIChat() {
     setInput("");
     setLoading(true);
 
+    // Build conversation history for context
+    const history = messages.map((m) => ({ role: m.role, content: m.content }));
+    history.push({ role: "user", content: prompt });
+
+    let assistantContent = "";
+
+    const upsertAssistant = (chunk: string) => {
+      assistantContent += chunk;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.role === "assistant" && last.id === -1) {
+          return prev.map((m, i) => (i === prev.length - 1 ? { ...m, content: assistantContent } : m));
+        }
+        return [...prev, { id: -1, role: "assistant", content: assistantContent }];
+      });
+    };
+
     try {
-      const res = await api.askAI({ prompt, language: user?.language || "en" });
-      const assistantMsg: ChatMessage = {
-        id: Date.now() + 1,
-        role: "assistant",
-        content: res.reply,
-        risk_level: res.risk_level,
-        suggested_actions: res.suggested_actions,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      const resp = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ messages: history }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error || "Request failed");
+      }
+
+      if (!resp.body) throw new Error("No response stream");
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let textBuffer = "";
+      let streamDone = false;
+
+      while (!streamDone) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        textBuffer += decoder.decode(value, { stream: true });
+
+        let newlineIndex: number;
+        while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+          let line = textBuffer.slice(0, newlineIndex);
+          textBuffer = textBuffer.slice(newlineIndex + 1);
+
+          if (line.endsWith("\r")) line = line.slice(0, -1);
+          if (line.startsWith(":") || line.trim() === "") continue;
+          if (!line.startsWith("data: ")) continue;
+
+          const jsonStr = line.slice(6).trim();
+          if (jsonStr === "[DONE]") { streamDone = true; break; }
+
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) upsertAssistant(content);
+          } catch {
+            textBuffer = line + "\n" + textBuffer;
+            break;
+          }
+        }
+      }
+
+      // Flush remaining
+      if (textBuffer.trim()) {
+        for (let raw of textBuffer.split("\n")) {
+          if (!raw) continue;
+          if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+          if (raw.startsWith(":") || raw.trim() === "") continue;
+          if (!raw.startsWith("data: ")) continue;
+          const jsonStr = raw.slice(6).trim();
+          if (jsonStr === "[DONE]") continue;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+            if (content) upsertAssistant(content);
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Finalize the assistant message with a real ID
+      setMessages((prev) =>
+        prev.map((m) => (m.id === -1 ? { ...m, id: Date.now() + 1 } : m))
+      );
     } catch (err: any) {
       toast({ title: "AI Error", description: err.message, variant: "destructive" });
     } finally {
@@ -94,43 +173,22 @@ export default function AIChat() {
                 <Bot className="h-4 w-4 text-primary" />
               </div>
             )}
-            <div className={`max-w-[75%] flex flex-col gap-2`}>
+            <div className="max-w-[75%] flex flex-col gap-2">
               <div
-                className={`px-4 py-3 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed ${
+                className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
                   msg.role === "user"
                     ? "bg-primary text-primary-foreground rounded-br-md"
                     : "bg-card border border-border rounded-bl-md"
                 }`}
               >
-                {msg.content}
+                {msg.role === "assistant" ? (
+                  <div className="prose prose-sm dark:prose-invert max-w-none">
+                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  </div>
+                ) : (
+                  <span className="whitespace-pre-wrap">{msg.content}</span>
+                )}
               </div>
-
-              {/* Risk warning */}
-              {msg.risk_level && msg.risk_level !== "low" && (
-                <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-xl ${
-                  msg.risk_level === "high"
-                    ? "bg-destructive/10 text-destructive"
-                    : "bg-sun/30 text-foreground"
-                }`}>
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  <span>
-                    {msg.risk_level === "high"
-                      ? "It sounds like you may need immediate support. Please reach out to a helpline."
-                      : "Consider connecting with your care provider."}
-                  </span>
-                </div>
-              )}
-
-              {/* Suggested actions */}
-              {msg.suggested_actions && msg.suggested_actions.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-1">
-                  {msg.suggested_actions.map((action, i) => (
-                    <span key={i} className="text-xs bg-secondary text-secondary-foreground px-2.5 py-1 rounded-full">
-                      {action}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
             {msg.role === "user" && (
               <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center shrink-0 mt-1">
@@ -140,7 +198,7 @@ export default function AIChat() {
           </div>
         ))}
 
-        {loading && (
+        {loading && messages[messages.length - 1]?.role !== "assistant" && (
           <div className="flex gap-3 items-start">
             <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
               <Bot className="h-4 w-4 text-primary" />
@@ -152,7 +210,7 @@ export default function AIChat() {
         )}
       </div>
 
-      {/* Quick prompts (only show when few messages) */}
+      {/* Quick prompts */}
       {messages.length <= 1 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {quickPrompts.map((qp) => (
