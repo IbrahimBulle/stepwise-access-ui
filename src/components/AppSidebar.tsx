@@ -11,6 +11,7 @@ import {
   MessageCircle,
   ClipboardList,
   LogOut,
+  Sparkles,
 } from "lucide-react";
 
 const userNav = [
@@ -21,6 +22,7 @@ const userNav = [
   { title: "Community", url: "/community", icon: MessageCircle },
   { title: "Resources", url: "/resources", icon: BookHeart },
   { title: "Rewards", url: "/rewards", icon: Gift },
+  { title: "AI Companion", url: "/ai-chat", icon: Sparkles },
 ];
 
 const chwNav = [
@@ -29,6 +31,7 @@ const chwNav = [
   { title: "Directory", url: "/directory", icon: Users },
   { title: "Community", url: "/community", icon: MessageCircle },
   { title: "Resources", url: "/resources", icon: BookHeart },
+  { title: "AI Companion", url: "/ai-chat", icon: Sparkles },
 ];
 
 export function AppSidebar() {

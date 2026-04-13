@@ -17,6 +17,7 @@ import Resources from "./pages/Resources";
 import Rewards from "./pages/Rewards";
 import Caseload from "./pages/Caseload";
 import Directory from "./pages/Directory";
+import AIChat from "./pages/AIChat";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -42,6 +43,7 @@ const App = () => (
               <Route path="/rewards" element={<Rewards />} />
               <Route path="/caseload" element={<Caseload />} />
               <Route path="/directory" element={<Directory />} />
+              <Route path="/ai-chat" element={<AIChat />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
