@@ -17,6 +17,7 @@ import Resources from "./pages/Resources";
 import Rewards from "./pages/Rewards";
 import Caseload from "./pages/Caseload";
 import Directory from "./pages/Directory";
+import CareChat from "./pages/CareChat";
 import AIChat from "./pages/AIChat";
 import NotFound from "./pages/NotFound";
 
@@ -43,6 +44,7 @@ const App = () => (
               <Route path="/rewards" element={<Rewards />} />
               <Route path="/caseload" element={<Caseload />} />
               <Route path="/directory" element={<Directory />} />
+              <Route path="/care-chat" element={<CareChat />} />
               <Route path="/ai-chat" element={<AIChat />} />
             </Route>
             <Route path="*" element={<NotFound />} />

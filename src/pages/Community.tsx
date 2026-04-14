@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { api } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { api, type CommunityMessage } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
@@ -11,13 +11,21 @@ export default function Community() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [room, setRoom] = useState("general");
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<CommunityMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     api.getCommunityMessages(room).then(setMessages).catch(console.error);
   }, [room]);
+
+  const orderedMessages = useMemo(
+    () =>
+      [...messages].sort(
+        (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+      ),
+    [messages],
+  );
 
   const handleSend = async () => {
     if (!newMessage.trim()) return;
@@ -58,19 +66,31 @@ export default function Community() {
 
       {/* Messages */}
       <div className="card-elevated flex-1 overflow-y-auto p-6 flex flex-col gap-3">
-        {messages.length === 0 && (
+        {orderedMessages.length === 0 && (
           <p className="text-center text-muted-foreground py-8">No messages yet. Start the conversation!</p>
         )}
-        {messages.map((m: any) => (
-          <div key={m.id} className={`flex flex-col gap-1 ${m.user_id === user?.id ? "items-end" : "items-start"}`}>
+        {orderedMessages.map((message) => {
+          const isCurrentUser =
+            message.user_id === user?.id ||
+            (!message.user_id &&
+              message.name?.trim().toLowerCase() === user?.name?.trim().toLowerCase());
+
+          return (
+          <div key={message.id} className={`flex flex-col gap-1 ${isCurrentUser ? "items-end" : "items-start"}`}>
             <div className={`px-4 py-3 rounded-2xl max-w-[80%] ${
-              m.user_id === user?.id ? "bg-primary/10 text-foreground" : "bg-secondary text-foreground"
+              isCurrentUser ? "bg-primary/10 text-foreground" : "bg-secondary text-foreground"
             }`}>
-              <p className="text-xs font-medium text-muted-foreground mb-1">{m.user_name || "User"}</p>
-              <p className="text-sm">{m.message}</p>
+              <p className="text-xs font-medium text-muted-foreground mb-1">
+                {message.user_name || message.name || "User"}
+              </p>
+              <p className="text-sm">{message.message}</p>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                {formatTime(message.created_at)}
+              </p>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* Input */}
@@ -88,4 +108,14 @@ export default function Community() {
       </div>
     </div>
   );
+}
+
+function formatTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }

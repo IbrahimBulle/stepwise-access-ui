@@ -1,15 +1,72 @@
 import { useAuth } from "@/contexts/AuthContext";
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { Heart, Moon, Brain, Calendar, MessageCircle, Gift } from "lucide-react";
+import { Link } from "react-router-dom";
+import { api, type DashboardSummary } from "@/lib/api";
+import { Heart, Brain, Calendar, MessageCircle, Gift, AlertTriangle, Users } from "lucide-react";
 
 export default function Dashboard() {
   const { user, isUser } = useAuth();
-  const [summary, setSummary] = useState<any>(null);
+  const [summary, setSummary] = useState<DashboardSummary | null>(null);
 
   useEffect(() => {
     api.getDashboardSummary().then(setSummary).catch(console.error);
   }, []);
+
+  const statCards = summary ? (
+    isUser
+      ? [
+          {
+            icon: <Heart className="h-5 w-5" />,
+            label: "Check-ins",
+            value: summary.total_checkins || 0,
+            color: "bg-clay/20 text-clay-foreground",
+          },
+          {
+            icon: <Calendar className="h-5 w-5" />,
+            label: "Appointments",
+            value: summary.total_appointments || 0,
+            color: "bg-sage/20 text-sage-foreground",
+          },
+          {
+            icon: <MessageCircle className="h-5 w-5" />,
+            label: "Community",
+            value: summary.total_community_messages || 0,
+            color: "bg-sun/40 text-sun-foreground",
+          },
+          {
+            icon: <Gift className="h-5 w-5" />,
+            label: "Points",
+            value: summary.points || 0,
+            color: "bg-primary/10 text-foreground",
+          },
+        ]
+      : [
+          {
+            icon: <Users className="h-5 w-5" />,
+            label: "Patients",
+            value: summary.total_checkins || 0,
+            color: "bg-clay/20 text-clay-foreground",
+          },
+          {
+            icon: <AlertTriangle className="h-5 w-5" />,
+            label: "High Risk",
+            value: summary.total_risk_events || 0,
+            color: "bg-destructive/10 text-destructive",
+          },
+          {
+            icon: <Calendar className="h-5 w-5" />,
+            label: "Appointments",
+            value: summary.total_appointments || 0,
+            color: "bg-sage/20 text-sage-foreground",
+          },
+          {
+            icon: <MessageCircle className="h-5 w-5" />,
+            label: "Community",
+            value: summary.total_community_messages || 0,
+            color: "bg-sun/40 text-sun-foreground",
+          },
+        ]
+  ) : [];
 
   const today = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -36,30 +93,9 @@ export default function Dashboard() {
       {/* Stats Grid */}
       {summary && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <StatCard
-            icon={<Heart className="h-5 w-5" />}
-            label="Check-ins"
-            value={summary.total_checkins || 0}
-            color="bg-clay/20 text-clay-foreground"
-          />
-          <StatCard
-            icon={<Calendar className="h-5 w-5" />}
-            label="Appointments"
-            value={summary.total_appointments || 0}
-            color="bg-sage/20 text-sage-foreground"
-          />
-          <StatCard
-            icon={<MessageCircle className="h-5 w-5" />}
-            label="Community"
-            value={summary.total_community_messages || 0}
-            color="bg-sun/40 text-sun-foreground"
-          />
-          <StatCard
-            icon={<Gift className="h-5 w-5" />}
-            label="Points"
-            value={summary.points || 0}
-            color="bg-primary/10 text-foreground"
-          />
+          {statCards.map((card) => (
+            <StatCard key={card.label} icon={card.icon} label={card.label} value={card.value} color={card.color} />
+          ))}
         </div>
       )}
 
@@ -79,6 +115,23 @@ export default function Dashboard() {
                 : "Keep monitoring your wellness. You're doing great!"}
             </p>
           </div>
+        </div>
+      )}
+
+      {isUser && summary && !summary.chw_linked && (
+        <div className="card-elevated p-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between border-primary/20 bg-primary/5">
+          <div>
+            <p className="font-medium">You have not linked a Community Health Worker yet.</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              Browse available CHWs and add one to your care team for follow-up support.
+            </p>
+          </div>
+          <Link
+            to="/directory"
+            className="inline-flex h-11 items-center justify-center rounded-2xl bg-primary px-5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+          >
+            Find CHW Support
+          </Link>
         </div>
       )}
 

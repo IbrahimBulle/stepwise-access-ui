@@ -1,3 +1,3 @@
-# Welcome to your Lovable project
+# AfyaMind
 
-TODO: Document your project here
+Mental wellness support app for check-ins, journaling, community, appointments, and AI-guided encouragement.
