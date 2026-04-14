@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "https://mental-health-hub-ue25.onrender.com";
+const API_BASE = import.meta.env.VITE_API_BASE || "";
 
 interface AuthUser {
   id: number;
@@ -74,6 +74,16 @@ interface CommunityMessage {
   user_id?: number;
   user_name?: string;
   name?: string;
+}
+
+interface CareMessage {
+  id: number;
+  room_id: string;
+  sender_id: number;
+  sender_name: string;
+  sender_role: string;
+  message: string;
+  created_at: string;
 }
 
 interface RewardsBalance {
@@ -253,6 +263,11 @@ class ApiClient {
     return this.request<CommunityMessage[]>("GET", `/api/community/messages${q}`);
   }
 
+  getCareMessages(room_id: string) {
+    const q = `?room_id=${encodeURIComponent(room_id)}`;
+    return this.request<CareMessage[]>("GET", `/api/care/messages${q}`);
+  }
+
   // Rewards
   getRewards() {
     return this.request<RewardsBalance>("GET", "/api/rewards");
@@ -314,6 +329,7 @@ export type {
   CHWLinkStatus,
   CheckinResponse,
   CommunityMessage,
+  CareMessage,
   DashboardSummary,
   JournalEntry,
   Reminder,

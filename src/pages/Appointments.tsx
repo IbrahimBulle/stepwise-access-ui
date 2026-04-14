@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, type Appointment, type Reminder } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { BellRing, Calendar, Phone, User } from "lucide-react";
-import VoiceCall from "@/components/VoiceCall";
 
 export default function Appointments() {
   const { toast } = useToast();
@@ -18,7 +18,6 @@ export default function Appointments() {
   const [reminderTime, setReminderTime] = useState("");
   const [loading, setLoading] = useState(false);
   const [reminderLoading, setReminderLoading] = useState(false);
-  const [activeCall, setActiveCall] = useState<{ id: number; therapist: string } | null>(null);
 
   const upcomingReminders = useMemo(
     () =>
@@ -169,13 +168,15 @@ export default function Appointments() {
               </div>
               <div className="flex items-center gap-3 shrink-0">
                 <Button
+                  asChild
                   variant="outline"
                   size="sm"
                   className="rounded-full gap-2 border-primary/30 text-primary hover:bg-primary/5"
-                  onClick={() => setActiveCall({ id: appointment.id, therapist: appointment.therapist })}
                 >
-                  <Phone className="h-3.5 w-3.5" />
-                  Call
+                  <Link to="/care-chat">
+                    <Phone className="h-3.5 w-3.5" />
+                    Open Care Chat
+                  </Link>
                 </Button>
                 <span
                   className={`text-xs px-3 py-1 rounded-full font-medium ${
@@ -257,13 +258,6 @@ export default function Appointments() {
         </div>
       </div>
 
-      {activeCall && (
-        <VoiceCall
-          appointmentId={activeCall.id}
-          therapistName={activeCall.therapist}
-          onClose={() => setActiveCall(null)}
-        />
-      )}
     </div>
   );
 }

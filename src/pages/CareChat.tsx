@@ -1,12 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import CareVideoCallDialog from "@/components/CareVideoCallDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/contexts/AuthContext";
 import { useToast } from "@/hooks/use-toast";
-import { supabase } from "@/integrations/supabase/client";
-import { api, type CHWLinkStatus } from "@/lib/api";
+import { api, type CHWLinkStatus, type CareMessage } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   AlertTriangle,
@@ -32,22 +31,15 @@ type ConversationTarget = {
   riskLevel?: string;
 };
 
-type CareMessage = {
-  id: string;
-  roomId: string;
-  senderId: number;
-  senderName: string;
-  senderRole: CareRole;
-  body: string;
-  createdAt: string;
-};
-
-type RoomPresence = {
-  userId: number;
+type PresenceParticipant = {
+  user_id: number;
   name: string;
   role: CareRole;
-  roomId: string;
-  onlineAt: string;
+};
+
+type CareSocketEnvelope = {
+  type: string;
+  payload?: unknown;
 };
 
 type IncomingCall = {
@@ -59,8 +51,8 @@ type IncomingCall = {
 
 type OfferPayload = {
   from: number;
-  callerName: string;
-  callerRole: CareRole;
+  caller_name: string;
+  caller_role: CareRole;
   sdp: RTCSessionDescriptionInit;
 };
 
@@ -74,12 +66,6 @@ type IcePayload = {
   candidate: RTCIceCandidateInit;
 };
 
-type CallEndPayload = {
-  from: number;
-  reason?: string;
-};
-
-const STORED_MESSAGE_LIMIT = 150;
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
@@ -94,7 +80,8 @@ export default function CareChat() {
   const [linkedCHW, setLinkedCHW] = useState<CHWLinkStatus | null>(null);
   const [availabilityMessage, setAvailabilityMessage] = useState<string | null>(null);
   const [loadingTargets, setLoadingTargets] = useState(true);
-  const [messages, setMessages] = useState<CareMessage[]>([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [messagesByRoom, setMessagesByRoom] = useState<Record<string, CareMessage[]>>({});
   const [draft, setDraft] = useState("");
   const [onlineByTargetId, setOnlineByTargetId] = useState<Record<number, boolean>>({});
   const [connectedRooms, setConnectedRooms] = useState<Record<string, boolean>>({});
@@ -107,7 +94,7 @@ export default function CareChat() {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
 
-  const roomChannelsRef = useRef<Map<string, ReturnType<typeof supabase.channel>>>(new Map());
+  const socketsRef = useRef<Map<string, WebSocket>>(new Map());
   const selectedRoomRef = useRef<string | null>(null);
   const activeCallRoomRef = useRef<string | null>(null);
   const incomingOfferRef = useRef<RTCSessionDescriptionInit | null>(null);
@@ -123,6 +110,7 @@ export default function CareChat() {
 
   const selectedTarget = targets.find((target) => target.id === selectedTargetId) ?? null;
   const selectedRoomId = selectedTarget?.roomId ?? null;
+  const messages = selectedRoomId ? messagesByRoom[selectedRoomId] ?? [] : [];
   const callIsActive =
     callPhase === "incoming" ||
     callPhase === "calling" ||
@@ -137,15 +125,10 @@ export default function CareChat() {
   }, [callPhase]);
 
   useEffect(() => {
+    selectedRoomRef.current = selectedRoomId;
     if (selectedRoomId) {
-      selectedRoomRef.current = selectedRoomId;
-      setMessages(readRoomMessages(selectedRoomId));
       setUnreadByRoom((current) => ({ ...current, [selectedRoomId]: 0 }));
-      return;
     }
-
-    selectedRoomRef.current = null;
-    setMessages([]);
   }, [selectedRoomId]);
 
   useEffect(() => {
@@ -225,11 +208,7 @@ export default function CareChat() {
             if (current && mappedTargets.some((target) => target.id === current)) return current;
             return mappedTargets[0]?.id ?? null;
           });
-          setAvailabilityMessage(
-            mappedTargets.length === 0
-              ? "Patients will appear here once they are linked to your caseload."
-              : null,
-          );
+          setAvailabilityMessage(mappedTargets.length === 0 ? "Patients will appear here once they are linked to your caseload." : null);
           return;
         }
 
@@ -256,6 +235,27 @@ export default function CareChat() {
     };
   }, [isCHW, isUser, toast, user]);
 
+  const loadRoomMessages = useCallback(
+    async (roomId: string) => {
+      setLoadingMessages(true);
+      try {
+        const roomMessages = await api.getCareMessages(roomId);
+        setMessagesByRoom((current) => ({ ...current, [roomId]: roomMessages }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to load message history.";
+        toast({ title: "Unable to load messages", description: message, variant: "destructive" });
+      } finally {
+        setLoadingMessages(false);
+      }
+    },
+    [toast],
+  );
+
+  useEffect(() => {
+    if (!selectedRoomId) return;
+    void loadRoomMessages(selectedRoomId);
+  }, [loadRoomMessages, selectedRoomId]);
+
   const stopCallTimer = useCallback(() => {
     if (callTimerRef.current !== null) {
       window.clearInterval(callTimerRef.current);
@@ -274,17 +274,14 @@ export default function CareChat() {
   const cleanupCallSession = useCallback(
     (nextPhase: CallPhase = "idle") => {
       stopCallTimer();
-
       peerConnectionRef.current?.close();
       peerConnectionRef.current = null;
       pendingIceCandidatesRef.current = [];
       incomingOfferRef.current = null;
       activeCallRoomRef.current = null;
-
       localStreamRef.current?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
       remoteStreamRef.current = null;
-
       setLocalMedia(null);
       setRemoteMedia(null);
       setIsMicMuted(false);
@@ -299,45 +296,48 @@ export default function CareChat() {
   useEffect(() => {
     return () => {
       cleanupCallSession();
-      roomChannelsRef.current.forEach((channel) => {
-        void supabase.removeChannel(channel);
-      });
-      roomChannelsRef.current.clear();
+      socketsRef.current.forEach((socket) => socket.close());
+      socketsRef.current.clear();
     };
   }, [cleanupCallSession]);
 
-  const sendRoomBroadcast = useCallback(async (roomId: string, event: string, payload: Record<string, unknown>) => {
-    const channel = roomChannelsRef.current.get(roomId);
-    if (!channel) return;
-
-    try {
-      await channel.send({ type: "broadcast", event, payload });
-    } catch (error) {
-      console.error(`Failed to send ${event}`, error);
-    }
+  const updateRoomMessages = useCallback((roomId: string, updater: (current: CareMessage[]) => CareMessage[]) => {
+    setMessagesByRoom((current) => ({
+      ...current,
+      [roomId]: updater(current[roomId] ?? []),
+    }));
   }, []);
 
-  const appendMessageToRoom = useCallback(
+  const appendIncomingMessage = useCallback(
     (roomId: string, message: CareMessage) => {
-      const result = appendStoredMessage(roomId, message);
-      if (!result.added) return;
+      updateRoomMessages(roomId, (current) => {
+        if (current.some((item) => item.id === message.id)) return current;
+        return [...current, message];
+      });
 
-      if (selectedRoomRef.current === roomId) {
-        setMessages(result.messages);
-        return;
-      }
+      if (selectedRoomRef.current === roomId) return;
 
       setUnreadByRoom((current) => ({
         ...current,
         [roomId]: (current[roomId] ?? 0) + 1,
       }));
+
       toast({
-        title: `New message from ${message.senderName}`,
-        description: message.body.length > 84 ? `${message.body.slice(0, 84)}...` : message.body,
+        title: `New message from ${message.sender_name}`,
+        description: message.message.length > 84 ? `${message.message.slice(0, 84)}...` : message.message,
       });
     },
-    [toast],
+    [toast, updateRoomMessages],
   );
+
+  const sendToRoom = useCallback((roomId: string, envelope: CareSocketEnvelope) => {
+    const socket = socketsRef.current.get(roomId);
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error("Realtime room is not connected yet.");
+    }
+
+    socket.send(JSON.stringify(envelope));
+  }, []);
 
   const flushPendingIceCandidates = useCallback(async (peerConnection: RTCPeerConnection) => {
     const queuedCandidates = [...pendingIceCandidatesRef.current];
@@ -357,12 +357,16 @@ export default function CareChat() {
       const peerConnection = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
       peerConnection.onicecandidate = (event) => {
-        if (!event.candidate || !user) return;
+        if (!event.candidate) return;
 
-        void sendRoomBroadcast(roomId, "ice-candidate", {
-          from: user.id,
-          candidate: event.candidate.toJSON(),
-        });
+        try {
+          sendToRoom(roomId, {
+            type: "ice_candidate",
+            payload: { candidate: event.candidate.toJSON() },
+          });
+        } catch (error) {
+          console.error("Unable to send ICE candidate", error);
+        }
       };
 
       peerConnection.ontrack = (event) => {
@@ -401,7 +405,7 @@ export default function CareChat() {
       peerConnectionRef.current = peerConnection;
       return peerConnection;
     },
-    [cleanupCallSession, sendRoomBroadcast, startCallTimer, user],
+    [cleanupCallSession, sendToRoom, startCallTimer],
   );
 
   const ensureLocalMedia = useCallback(async () => {
@@ -429,10 +433,14 @@ export default function CareChat() {
         callPhaseRef.current === "connecting" ||
         callPhaseRef.current === "connected"
       ) {
-        await sendRoomBroadcast(roomId, "call-declined", {
-          from: user.id,
-          reason: "busy",
-        });
+        try {
+          sendToRoom(roomId, {
+            type: "call_declined",
+            payload: { reason: "busy" },
+          });
+        } catch (error) {
+          console.error("Unable to decline busy call", error);
+        }
         return;
       }
 
@@ -442,13 +450,13 @@ export default function CareChat() {
       setSelectedTargetId(target.id);
       setIncomingCall({
         roomId,
-        callerName: payload.callerName,
-        callerRole: payload.callerRole,
+        callerName: payload.caller_name,
+        callerRole: payload.caller_role,
         from: payload.from,
       });
       setCallPhase("incoming");
     },
-    [sendRoomBroadcast, user],
+    [sendToRoom, user],
   );
 
   const handleIncomingAnswer = useCallback(
@@ -482,89 +490,89 @@ export default function CareChat() {
   }, []);
 
   useEffect(() => {
-    roomChannelsRef.current.forEach((channel) => {
-      void supabase.removeChannel(channel);
-    });
-    roomChannelsRef.current.clear();
+    socketsRef.current.forEach((socket) => socket.close());
+    socketsRef.current.clear();
     setConnectedRooms({});
     setOnlineByTargetId({});
 
     if (!user || targets.length === 0) return;
 
-    const channels = new Map<string, ReturnType<typeof supabase.channel>>();
+    const token = api.getToken();
+    if (!token) return;
+
+    const roomMap = new Map<string, WebSocket>();
 
     targets.forEach((target) => {
-      const channel = supabase.channel(target.roomId, {
-        config: {
-          presence: { key: String(user.id) },
-        },
-      });
+      const socket = new WebSocket(buildCareSocketUrl(target.roomId, token));
 
-      channel
-        .on("broadcast", { event: "chat-message" }, ({ payload }) => {
-          const message = payload as CareMessage;
-          if (message.senderId === user.id) return;
-          appendMessageToRoom(target.roomId, message);
-        })
-        .on("broadcast", { event: "video-offer" }, ({ payload }) => {
-          void handleIncomingOffer(target.roomId, payload as OfferPayload, target);
-        })
-        .on("broadcast", { event: "video-answer" }, ({ payload }) => {
-          void handleIncomingAnswer(payload as AnswerPayload);
-        })
-        .on("broadcast", { event: "ice-candidate" }, ({ payload }) => {
-          const icePayload = payload as IcePayload;
-          if (icePayload.from === user.id) return;
-          void handleIncomingIceCandidate(icePayload);
-        })
-        .on("broadcast", { event: "call-hangup" }, ({ payload }) => {
-          const endPayload = payload as CallEndPayload;
-          if (!user || endPayload.from === user.id) return;
+      socket.onopen = () => {
+        setConnectedRooms((current) => ({ ...current, [target.roomId]: true }));
+      };
 
-          cleanupCallSession("ended");
-        })
-        .on("broadcast", { event: "call-declined" }, ({ payload }) => {
-          const declinePayload = payload as CallEndPayload;
-          if (!user || declinePayload.from === user.id) return;
+      socket.onclose = () => {
+        setConnectedRooms((current) => ({ ...current, [target.roomId]: false }));
+        setOnlineByTargetId((current) => ({ ...current, [target.id]: false }));
+      };
 
-          cleanupCallSession("declined");
-        })
-        .on("presence", { event: "sync" }, () => {
-          const presenceState = channel.presenceState<RoomPresence>();
-          const activeUsers = Object.values(presenceState).flat();
-          const isCounterpartOnline = activeUsers.some((presence) => Number(presence.userId) === target.id);
+      socket.onmessage = (event) => {
+        try {
+          const parsed = JSON.parse(event.data) as CareSocketEnvelope;
 
-          setOnlineByTargetId((current) => ({
-            ...current,
-            [target.id]: isCounterpartOnline,
-          }));
-        })
-        .subscribe((status) => {
-          if (status !== "SUBSCRIBED") return;
+          if (parsed.type === "presence_sync") {
+            const participants = ((parsed.payload as { participants?: PresenceParticipant[] })?.participants ?? []).filter(
+              Boolean,
+            );
+            setOnlineByTargetId((current) => ({
+              ...current,
+              [target.id]: participants.some((participant) => participant.user_id === target.id),
+            }));
+            return;
+          }
 
-          setConnectedRooms((current) => ({ ...current, [target.roomId]: true }));
-          void channel.track({
-            userId: user.id,
-            name: user.name,
-            role: user.role as CareRole,
-            roomId: target.roomId,
-            onlineAt: new Date().toISOString(),
-          });
-        });
+          if (parsed.type === "chat_message") {
+            appendIncomingMessage(target.roomId, parsed.payload as CareMessage);
+            return;
+          }
 
-      channels.set(target.roomId, channel);
+          if (parsed.type === "video_offer") {
+            void handleIncomingOffer(target.roomId, parsed.payload as OfferPayload, target);
+            return;
+          }
+
+          if (parsed.type === "video_answer") {
+            void handleIncomingAnswer(parsed.payload as AnswerPayload);
+            return;
+          }
+
+          if (parsed.type === "ice_candidate") {
+            void handleIncomingIceCandidate(parsed.payload as IcePayload);
+            return;
+          }
+
+          if (parsed.type === "call_hangup") {
+            cleanupCallSession("ended");
+            return;
+          }
+
+          if (parsed.type === "call_declined") {
+            cleanupCallSession("declined");
+          }
+        } catch (error) {
+          console.error("Unable to parse care socket event", error);
+        }
+      };
+
+      roomMap.set(target.roomId, socket);
     });
 
-    roomChannelsRef.current = channels;
+    socketsRef.current = roomMap;
 
     return () => {
-      channels.forEach((channel) => {
-        void supabase.removeChannel(channel);
-      });
-      roomChannelsRef.current = new Map();
+      roomMap.forEach((socket) => socket.close());
+      socketsRef.current = new Map();
     };
   }, [
-    appendMessageToRoom,
+    appendIncomingMessage,
     cleanupCallSession,
     handleIncomingAnswer,
     handleIncomingIceCandidate,
@@ -575,7 +583,7 @@ export default function CareChat() {
 
   const handleSendMessage = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!user || !selectedTarget || !selectedRoomId) return;
+    if (!selectedTarget || !selectedRoomId) return;
 
     const body = draft.trim();
     if (!body) return;
@@ -589,31 +597,26 @@ export default function CareChat() {
       return;
     }
 
-    const message: CareMessage = {
-      id: crypto.randomUUID(),
-      roomId: selectedRoomId,
-      senderId: user.id,
-      senderName: user.name,
-      senderRole: user.role as CareRole,
-      body,
-      createdAt: new Date().toISOString(),
-    };
-
-    appendMessageToRoom(selectedRoomId, message);
-    setDraft("");
-
-    await sendRoomBroadcast(selectedRoomId, "chat-message", message);
+    try {
+      sendToRoom(selectedRoomId, {
+        type: "chat_message",
+        payload: { message: body },
+      });
+      setDraft("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to send the message.";
+      toast({ title: "Send failed", description: message, variant: "destructive" });
+    }
   };
 
   const handleDraftKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key !== "Enter" || event.shiftKey) return;
-
     event.preventDefault();
     void handleSendMessage();
   };
 
   const startVideoCall = useCallback(async () => {
-    if (!user || !selectedTarget || !selectedRoomId) return;
+    if (!selectedTarget || !selectedRoomId) return;
 
     if (!canSendRealtime) {
       toast({
@@ -637,11 +640,9 @@ export default function CareChat() {
       await peerConnection.setLocalDescription(offer);
       setCallPhase("calling");
 
-      await sendRoomBroadcast(selectedRoomId, "video-offer", {
-        from: user.id,
-        callerName: user.name,
-        callerRole: user.role as CareRole,
-        sdp: offer,
+      sendToRoom(selectedRoomId, {
+        type: "video_offer",
+        payload: { sdp: offer },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to start the video call.";
@@ -655,13 +656,12 @@ export default function CareChat() {
     ensureLocalMedia,
     selectedRoomId,
     selectedTarget,
-    sendRoomBroadcast,
+    sendToRoom,
     toast,
-    user,
   ]);
 
   const acceptIncomingCall = useCallback(async () => {
-    if (!user || !incomingCall || !incomingOfferRef.current) return;
+    if (!incomingCall || !incomingOfferRef.current) return;
 
     try {
       setCallPhase("connecting");
@@ -677,54 +677,46 @@ export default function CareChat() {
       await peerConnection.setLocalDescription(answer);
       setIncomingCall(null);
 
-      await sendRoomBroadcast(incomingCall.roomId, "video-answer", {
-        from: user.id,
-        sdp: answer,
+      sendToRoom(incomingCall.roomId, {
+        type: "video_answer",
+        payload: { sdp: answer },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to accept the incoming call.";
       cleanupCallSession();
       toast({ title: "Unable to join call", description: message, variant: "destructive" });
     }
-  }, [
-    cleanupCallSession,
-    createPeerConnection,
-    ensureLocalMedia,
-    flushPendingIceCandidates,
-    incomingCall,
-    sendRoomBroadcast,
-    toast,
-    user,
-  ]);
+  }, [cleanupCallSession, createPeerConnection, ensureLocalMedia, flushPendingIceCandidates, incomingCall, sendToRoom, toast]);
 
-  const declineIncomingCall = useCallback(async () => {
-    if (!user || !incomingCall) {
+  const declineIncomingCall = useCallback(() => {
+    if (!incomingCall) {
       cleanupCallSession();
       return;
     }
 
-    await sendRoomBroadcast(incomingCall.roomId, "call-declined", {
-      from: user.id,
-      reason: "declined",
-    });
+    try {
+      sendToRoom(incomingCall.roomId, {
+        type: "call_declined",
+        payload: { reason: "declined" },
+      });
+    } catch (error) {
+      console.error("Unable to send decline event", error);
+    }
     cleanupCallSession();
-  }, [cleanupCallSession, incomingCall, sendRoomBroadcast, user]);
+  }, [cleanupCallSession, incomingCall, sendToRoom]);
 
-  const hangupCall = useCallback(async () => {
-    if (!user) {
-      cleanupCallSession();
-      return;
-    }
-
+  const hangupCall = useCallback(() => {
     const roomId = activeCallRoomRef.current ?? selectedRoomRef.current;
     if (roomId) {
-      await sendRoomBroadcast(roomId, "call-hangup", {
-        from: user.id,
-      });
+      try {
+        sendToRoom(roomId, { type: "call_hangup" });
+      } catch (error) {
+        console.error("Unable to send hangup event", error);
+      }
     }
 
     cleanupCallSession("ended");
-  }, [cleanupCallSession, sendRoomBroadcast, user]);
+  }, [cleanupCallSession, sendToRoom]);
 
   const closeCallDialog = useCallback(() => {
     cleanupCallSession();
@@ -743,12 +735,17 @@ export default function CareChat() {
   const toggleCamera = () => {
     if (!localStreamRef.current) return;
 
-    const shouldDisableCamera = !isCameraOff;
+    const shouldDisable = !isCameraOff;
     localStreamRef.current.getVideoTracks().forEach((track) => {
-      track.enabled = !shouldDisableCamera;
+      track.enabled = !shouldDisable;
     });
-    setIsCameraOff(shouldDisableCamera);
+    setIsCameraOff(shouldDisable);
   };
+
+  const statsLabel = useMemo(
+    () => (loadingMessages ? "Loading conversation..." : `${messages.length} messages available`),
+    [loadingMessages, messages.length],
+  );
 
   return (
     <>
@@ -762,7 +759,7 @@ export default function CareChat() {
           </div>
 
           <div className="rounded-2xl border border-border/70 bg-card px-4 py-3 text-sm text-muted-foreground">
-            Live sync works while both people are active in Care Chat. Recent messages are cached on this device for quick context.
+            Live sync works directly through your AfyaMind Render service, with stored message history and same-domain calls.
           </div>
         </header>
 
@@ -773,9 +770,7 @@ export default function CareChat() {
                 <MessageSquare className="h-5 w-5 text-primary" />
               </div>
               <div>
-                <h2 className="text-lg font-medium">
-                  {isUser ? "Linked Health Worker" : "Patient Threads"}
-                </h2>
+                <h2 className="text-lg font-medium">{isUser ? "Linked Health Worker" : "Patient Threads"}</h2>
                 <p className="text-sm text-muted-foreground">
                   {isUser ? "Open your direct care channel." : "Stay reachable for live patient support."}
                 </p>
@@ -826,14 +821,10 @@ export default function CareChat() {
                             </Badge>
                           </div>
                           <p className="mt-1 text-sm text-muted-foreground">{target.subtitle}</p>
-                          {target.detail && (
-                            <p className="mt-1 text-xs text-muted-foreground">{target.detail}</p>
-                          )}
+                          {target.detail && <p className="mt-1 text-xs text-muted-foreground">{target.detail}</p>}
                           {target.riskLevel && (
                             <div className="mt-3">
-                              <Badge className={riskBadgeClasses(target.riskLevel)}>
-                                {target.riskLevel} risk
-                              </Badge>
+                              <Badge className={riskBadgeClasses(target.riskLevel)}>{target.riskLevel} risk</Badge>
                             </div>
                           )}
                         </div>
@@ -896,6 +887,7 @@ export default function CareChat() {
                         </span>
                       )}
                       <span>{selectedTarget.subtitle}</span>
+                      <span>{statsLabel}</span>
                     </div>
                   </div>
 
@@ -913,7 +905,12 @@ export default function CareChat() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto px-6 py-5">
-                  {messages.length === 0 ? (
+                  {loadingMessages ? (
+                    <div className="flex h-full items-center justify-center text-muted-foreground">
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Loading conversation...
+                    </div>
+                  ) : messages.length === 0 ? (
                     <div className="flex h-full flex-col items-center justify-center rounded-3xl border border-dashed border-border/70 px-6 py-10 text-center text-muted-foreground">
                       <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
                         {selectedTarget.role === "community_health_worker" ? (
@@ -924,28 +921,20 @@ export default function CareChat() {
                       </div>
                       <h3 className="text-lg font-medium text-foreground">Ready for live care support</h3>
                       <p className="mt-2 max-w-xl">
-                        Messages here are labeled by role so it is always clear when the health worker is replying. Start the conversation once both sides are online.
+                        Messages here are stored by AfyaMind and labeled by role so it is always clear when the health worker is replying.
                       </p>
                     </div>
                   ) : (
                     <div className="flex flex-col gap-4">
                       {messages.map((message) => {
-                        const isOwn = user?.id === message.senderId;
+                        const isOwn = user?.id === message.sender_id;
 
                         return (
-                          <div
-                            key={message.id}
-                            className={cn(
-                              "flex flex-col gap-2",
-                              isOwn ? "items-end" : "items-start",
-                            )}
-                          >
+                          <div key={message.id} className={cn("flex flex-col gap-2", isOwn ? "items-end" : "items-start")}>
                             <div
                               className={cn(
                                 "max-w-[85%] rounded-3xl px-4 py-3 shadow-sm",
-                                isOwn
-                                  ? "bg-primary text-primary-foreground"
-                                  : "border border-border/70 bg-background",
+                                isOwn ? "bg-primary text-primary-foreground" : "border border-border/70 bg-background",
                               )}
                             >
                               <div
@@ -955,15 +944,15 @@ export default function CareChat() {
                                 )}
                               >
                                 <Badge
-                                  variant={message.senderRole === "community_health_worker" ? "default" : "secondary"}
+                                  variant={message.sender_role === "community_health_worker" ? "default" : "secondary"}
                                   className="shadow-none"
                                 >
-                                  {roleLabel(message.senderRole)}
+                                  {roleLabel(message.sender_role as CareRole)}
                                 </Badge>
-                                <span className="font-medium">{message.senderName}</span>
-                                <span>{formatMessageTime(message.createdAt)}</span>
+                                <span className="font-medium">{message.sender_name}</span>
+                                <span>{formatMessageTime(message.created_at)}</span>
                               </div>
-                              <p className="whitespace-pre-wrap text-sm leading-6">{message.body}</p>
+                              <p className="whitespace-pre-wrap text-sm leading-6">{message.message}</p>
                             </div>
                           </div>
                         );
@@ -977,9 +966,7 @@ export default function CareChat() {
                   {!canSendRealtime && (
                     <div className="mb-3 flex items-start gap-3 rounded-2xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-muted-foreground">
                       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
-                      <span>
-                        {selectedTarget.name} needs to be active in Care Chat for live messaging and video to work.
-                      </span>
+                      <span>{selectedTarget.name} needs to be active in Care Chat for live messaging and video to work.</span>
                     </div>
                   )}
 
@@ -999,9 +986,7 @@ export default function CareChat() {
 
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <p className="text-sm text-muted-foreground">
-                        {isRoomConnected
-                          ? "Realtime room connected."
-                          : "Connecting to the realtime room..."}
+                        {isRoomConnected ? "Realtime room connected." : "Connecting to the realtime room..."}
                       </p>
 
                       <Button
@@ -1042,8 +1027,8 @@ export default function CareChat() {
         isMicMuted={isMicMuted}
         isCameraOff={isCameraOff}
         onAccept={() => void acceptIncomingCall()}
-        onDecline={() => void declineIncomingCall()}
-        onHangup={() => void hangupCall()}
+        onDecline={declineIncomingCall}
+        onHangup={hangupCall}
         onClose={closeCallDialog}
         onToggleMic={toggleMicrophone}
         onToggleCamera={toggleCamera}
@@ -1055,6 +1040,16 @@ export default function CareChat() {
 function buildRoomId(firstUserId: number, secondUserId: number) {
   const [smallestId, largestId] = [firstUserId, secondUserId].sort((left, right) => left - right);
   return `care-room-${smallestId}-${largestId}`;
+}
+
+function buildCareSocketUrl(roomId: string, token: string) {
+  const explicitBase = import.meta.env.VITE_WS_BASE || import.meta.env.VITE_API_BASE || window.location.origin;
+  const base = new URL(explicitBase, window.location.origin);
+  const protocol = base.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = new URL(`${protocol}//${base.host}/ws/care`);
+  wsUrl.searchParams.set("room_id", roomId);
+  wsUrl.searchParams.set("token", token);
+  return wsUrl.toString();
 }
 
 function roleLabel(role: CareRole) {
@@ -1081,59 +1076,6 @@ function formatDateTime(value: string) {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function readRoomMessages(roomId: string) {
-  if (typeof window === "undefined") return [];
-
-  try {
-    const raw = window.localStorage.getItem(storageKey(roomId));
-    if (!raw) return [];
-
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.filter(isCareMessage).slice(-STORED_MESSAGE_LIMIT);
-  } catch {
-    return [];
-  }
-}
-
-function appendStoredMessage(roomId: string, message: CareMessage) {
-  const currentMessages = readRoomMessages(roomId);
-  if (currentMessages.some((entry) => entry.id === message.id)) {
-    return { messages: currentMessages, added: false };
-  }
-
-  const nextMessages = writeRoomMessages(roomId, [...currentMessages, message]);
-  return { messages: nextMessages, added: true };
-}
-
-function writeRoomMessages(roomId: string, messages: CareMessage[]) {
-  const trimmedMessages = messages.slice(-STORED_MESSAGE_LIMIT);
-  if (typeof window !== "undefined") {
-    window.localStorage.setItem(storageKey(roomId), JSON.stringify(trimmedMessages));
-  }
-  return trimmedMessages;
-}
-
-function storageKey(roomId: string) {
-  return `afyamind-care-chat:${roomId}`;
-}
-
-function isCareMessage(value: unknown): value is CareMessage {
-  if (!value || typeof value !== "object") return false;
-
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.id === "string" &&
-    typeof candidate.roomId === "string" &&
-    typeof candidate.senderId === "number" &&
-    typeof candidate.senderName === "string" &&
-    typeof candidate.senderRole === "string" &&
-    typeof candidate.body === "string" &&
-    typeof candidate.createdAt === "string"
-  );
 }
 
 function riskBadgeClasses(level: string) {
